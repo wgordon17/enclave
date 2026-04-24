@@ -1,0 +1,10 @@
+---
+# OSAC prerequisites
+- name: Deploy AAP
+  ansible.builtin.include_tasks: "{{ plugin_dir }}/tasks/deploy-aap.yaml"
+
+#Check Ansible Automation Platform license
+
+# OSAC deployment
+- name: Deploy OSAC operator
+  ansible.builtin.include_tasks: "{{ plugin_dir }}/tasks/deploy-osac-operator.yaml"
