@@ -10,7 +10,4 @@ placementRef:
 subjects:
 - apiGroup: policy.open-cluster-management.io
   kind: Policy
-  name: nvidia-gpu-catalogsource
-- apiGroup: policy.open-cluster-management.io
-  kind: Policy
   name: nvidia-gpu-configuration

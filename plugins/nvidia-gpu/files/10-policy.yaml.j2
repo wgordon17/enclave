@@ -12,7 +12,7 @@ spec:
   - apiVersion: policy.open-cluster-management.io/v1
     compliance: Compliant
     kind: Policy
-    name: nvidia-gpu-catalogsource
+    name: nvidia-gpu-operators
     namespace: openshift-acm-policies
   disabled: false
   remediationAction: enforce
@@ -27,39 +27,6 @@ spec:
           compliant: 2h
           noncompliant: 45s
         object-templates:
-        # Install NVIDIA GPU Operator
-        - complianceType: mustonlyhave
-          metadataComplianceType: musthave
-          objectDefinition:
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-                name: nvidia-gpu-operator
-        - complianceType: mustonlyhave
-          metadataComplianceType: musthave
-          objectDefinition:
-            apiVersion: operators.coreos.com/v1
-            kind: OperatorGroup
-            metadata:
-              name: nvidia-gpu-operator-group
-              namespace: nvidia-gpu-operator
-            spec:
-              targetNamespaces:
-              - nvidia-gpu-operator
-        - complianceType: mustonlyhave
-          metadataComplianceType: musthave
-          objectDefinition:
-            apiVersion: operators.coreos.com/v1alpha1
-            kind: Subscription
-            metadata:
-              name: gpu-operator-certified
-              namespace: nvidia-gpu-operator
-            spec:
-              channel: v25.10
-              installPlanApproval: Automatic
-              name: gpu-operator-certified
-              source: {{ mirror_certified_rh_operator_catalog }}-nvidia-gpu
-              sourceNamespace: openshift-marketplace
         # Create ClusterPolicy Instance
         - complianceType: mustonlyhave
           metadataComplianceType: musthave

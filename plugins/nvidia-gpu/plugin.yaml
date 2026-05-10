@@ -12,6 +12,12 @@ operators:
     init_version: 25.10.1
 
 installOperators: false
+clusterSelector:
+  matchExpressions:
+  - key: sovcloud.open-cluster-management.io/nvidia-gpu
+    operator: In
+    values:
+    - "true"
 
 defaults: {}
 
