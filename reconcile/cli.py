@@ -1,26 +1,35 @@
-import click
+import logging
 import sys
 
-from operator_versions import reconcile as operator_versions_reconcile
+import click
+
+from reconcile.operator_versions import reconcile as operator_versions_reconcile
+
+LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 
 @click.group()
-def cli():
-    pass
+@click.option(
+    "--log-level",
+    default="INFO",
+    type=click.Choice(LOG_LEVELS, case_sensitive=False),
+    help="Set the logging level.",
+)
+def cli(log_level: str) -> None:
+    """Reconcile CLI."""
+    logging.basicConfig(level=getattr(logging, log_level.upper()))
 
 
 @cli.command()
 @click.option("--operators", default="[]")
 @click.option("--dry-run/--no-dry-run", default=False)
-def operator_versions(operators, dry_run):
-    # rebuild sys.argv for the standalone script
+def operator_versions(operators: str, dry_run: bool) -> None:
     sys.argv = ["operator_versions.py", operators, str(dry_run)]
-
     operator_versions_reconcile()
 
 
 @cli.command()
-def mgmt_cluster_version():
+def mgmt_cluster_version() -> None:
     raise click.ClickException("mgmt-cluster-version is not implemented yet")
 
 
