@@ -119,6 +119,7 @@
     catalog_image: "{{ rh_operator_catalog }}"
     catalog_mirror: "{{ mirror_rh_operator_catalog }}-{{ plugin.name }}"
     catalog_version: "{{ rh_operator_catalog_version }}"
+    _main_catalog_cs: "cs-{{ mirror_rh_operator_catalog }}-{{ rh_operator_catalog_version | replace('.', '-') }}"
   tags: always
 
 - name: Override variables for certified catalog
@@ -126,8 +127,14 @@
     catalog_image: "{{ certified_operator_catalog }}"
     catalog_mirror: "{{ mirror_certified_rh_operator_catalog }}-{{ plugin.name }}"
     catalog_version: "{{ certified_operator_catalog_version }}"
+    _main_catalog_cs: "cs-{{ mirror_certified_rh_operator_catalog }}-{{ certified_operator_catalog_version | replace('.', '-') }}"
   when:
     - plugin.catalog | default("") == "certified"
+  tags: always
+
+- name: Set default catalog source
+  set_fact:
+    default_catalog_source: "{{ catalog_mirror if plugin.mirror | default('core') == 'plugin' else _main_catalog_cs }}"
   tags: always
 
 - name: Mirror plugin
@@ -158,7 +165,7 @@
 
 - name: Install plugin operators
   vars:
-    default_operator_source: "{{ catalog_mirror }}"
+    default_operator_source: "{{ default_catalog_source }}"
   ansible.builtin.include_tasks:
     file: tasks/configure_operator.yaml
     apply:
