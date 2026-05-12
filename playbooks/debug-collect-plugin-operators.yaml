@@ -1,0 +1,222 @@
+---
+# Debug wrapper for collect_core_plugin_operators.yaml
+#
+# Usage:
+#   ansible-playbook playbooks/debug-collect-plugin-operators.yaml
+#
+# With debugger (interactive):
+#   ANSIBLE_ENABLE_TASK_DEBUGGER=True ansible-playbook playbooks/debug-collect-plugin-operators.yaml
+#
+# With extra verbosity:
+#   ansible-playbook playbooks/debug-collect-plugin-operators.yaml -vv
+
+- name: Debug - Collect Core Plugin Operators
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # Override if needed
+    workingDir: "{{ lookup('env', 'PWD') }}"
+  tasks:
+    - name: Load common variables
+      ansible.builtin.include_tasks:
+        file: common/load-vars.yaml
+        apply:
+          tags: always
+      tags: always
+
+    - name: Display enabled_plugins
+      ansible.builtin.debug:
+        msg: "Enabled plugins: {{ enabled_plugins }}"
+
+    - name: Display storage_plugin
+      ansible.builtin.debug:
+        msg: "Storage plugin: {{ storage_plugin }}"
+
+    - name: "=== START: Find plugin descriptors ==="
+      ansible.builtin.debug:
+        msg: "Looking for plugin.yaml files in {{ playbook_dir }}/../plugins"
+
+    - name: Find plugin descriptors
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/../plugins"
+        patterns: "plugin.yaml"
+        recurse: true
+        depth: 2
+      register: r_cp_find
+
+    - name: Display found plugin files
+      ansible.builtin.debug:
+        msg: "Found {{ r_cp_find.files | length }} plugin.yaml files"
+        verbosity: 0
+
+    - name: List found plugin paths
+      ansible.builtin.debug:
+        msg: "{{ r_cp_find.files | map(attribute='path') | list }}"
+        verbosity: 1
+
+    - name: "=== STEP 1: Read plugin descriptors ==="
+      ansible.builtin.debug:
+        msg: "Reading and parsing all plugin.yaml files"
+
+    - name: Read plugin descriptors
+      ansible.builtin.slurp:
+        src: "{{ plugin_path }}"
+      loop: "{{ r_cp_find.files | map(attribute='path') | list }}"
+      register: r_cp_slurp
+      loop_control:
+        loop_var: plugin_path
+
+    - name: "=== STEP 2: Parse all plugins ==="
+      ansible.builtin.set_fact:
+        _all_plugins_parsed: >-
+          {{ r_cp_slurp.results
+             | map(attribute='content')
+             | map('b64decode')
+             | map('from_yaml')
+             | list }}
+
+    - name: Display all parsed plugins
+      ansible.builtin.debug:
+        msg: "All plugins: {{ _all_plugins_parsed | map(attribute='name') | list }}"
+
+    - name: Display all plugins with details
+      ansible.builtin.debug:
+        var: _all_plugins_parsed
+        verbosity: 2
+
+    - name: "=== STEP 3: Filter to enabled plugins ==="
+      ansible.builtin.set_fact:
+        _enabled_plugins: >-
+          {{ _all_plugins_parsed
+             | selectattr('name', 'in', enabled_plugins)
+             | list }}
+
+    - name: Display enabled plugins
+      ansible.builtin.debug:
+        msg: "Enabled plugins ({{ _enabled_plugins | length }}): {{ _enabled_plugins | map(attribute='name') | list }}"
+
+    - name: Display enabled plugins with mirror strategy
+      ansible.builtin.debug:
+        msg: "{{ item.name }}: mirror={{ item.mirror | default('none') }}, operators={{ item.operators | default([]) | length }}"
+      loop: "{{ _enabled_plugins }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "=== STEP 4: Filter to core-mirrored plugins ==="
+      ansible.builtin.debug:
+        msg: "Filtering to plugins without 'mirror' field OR with mirror='core'"
+
+    - name: Build core plugin list (no mirror field)
+      ansible.builtin.set_fact:
+        _plugins_no_mirror: >-
+          {{ _enabled_plugins
+             | rejectattr('mirror', 'defined')
+             | list }}
+
+    - name: Display plugins without mirror field
+      ansible.builtin.debug:
+        msg: "Plugins without 'mirror' field ({{ _plugins_no_mirror | length }}): {{ _plugins_no_mirror | map(attribute='name') | list }}"
+
+    - name: Build core plugin list (mirror=core)
+      ansible.builtin.set_fact:
+        _plugins_mirror_core: >-
+          {{ _enabled_plugins
+             | selectattr('mirror', 'defined')
+             | selectattr('mirror', 'equalto', 'core')
+             | list }}
+
+    - name: Display plugins with mirror=core
+      ansible.builtin.debug:
+        msg: "Plugins with mirror='core' ({{ _plugins_mirror_core | length }}): {{ _plugins_mirror_core | map(attribute='name') | list }}"
+
+    - name: Combine both lists
+      ansible.builtin.set_fact:
+        _core_plugins: >-
+          {{ _plugins_no_mirror + _plugins_mirror_core }}
+
+    - name: Display final core plugins list
+      ansible.builtin.debug:
+        msg: "Final core plugins ({{ _core_plugins | length }}): {{ _core_plugins | map(attribute='name') | list }}"
+
+    - name: "=== STEP 5: Extract operators from core plugins ==="
+      ansible.builtin.debug:
+        msg: "Extracting operator definitions from {{ _core_plugins | length }} core plugins"
+
+    - name: Filter to plugins with operators defined
+      ansible.builtin.set_fact:
+        _plugins_with_operators: >-
+          {{ _core_plugins
+             | selectattr('operators', 'defined')
+             | list }}
+
+    - name: Display plugins with operators
+      ansible.builtin.debug:
+        msg: "Plugins with operators ({{ _plugins_with_operators | length }}): {{ _plugins_with_operators | map(attribute='name') | list }}"
+
+    - name: Show operator counts per plugin
+      ansible.builtin.debug:
+        msg: "{{ item.name }}: {{ item.operators | length }} operator(s)"
+      loop: "{{ _plugins_with_operators }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Extract operator lists
+      ansible.builtin.set_fact:
+        _operator_lists: >-
+          {{ _plugins_with_operators
+             | map(attribute='operators')
+             | list }}
+
+    - name: Display operator lists structure
+      ansible.builtin.debug:
+        var: _operator_lists
+        verbosity: 2
+
+    - name: "=== STEP 6: Flatten to final operator list ==="
+      ansible.builtin.set_fact:
+        _core_plugin_operators: >-
+          {{ _core_plugins
+             | selectattr('operators', 'defined')
+             | map(attribute='operators')
+             | flatten
+             | list }}
+
+    - name: "=== FINAL RESULT ==="
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Core Plugin Operators Collection Result
+          ========================================
+          Total core plugins: {{ _core_plugins | length }}
+          Plugins with operators: {{ _plugins_with_operators | length }}
+          Total operators to mirror: {{ _core_plugin_operators | length }}
+
+          Operators:
+          {% for op in _core_plugin_operators %}
+            - {{ op.name }} (v{{ op.version }}, channel: {{ op.channel }})
+          {% endfor %}
+
+    - name: Display full operator definitions
+      ansible.builtin.debug:
+        var: _core_plugin_operators
+        verbosity: 1
+
+    - name: "=== COMPARISON: Run actual collection task ==="
+      ansible.builtin.debug:
+        msg: "Now running the actual collect_core_plugin_operators.yaml for comparison"
+
+    - name: Run actual collection task
+      ansible.builtin.include_tasks:
+        file: tasks/collect_core_plugin_operators.yaml
+
+    - name: Display actual result
+      ansible.builtin.debug:
+        msg: "Actual _core_plugin_operators: {{ _core_plugin_operators | map(attribute='name') | list }}"
+
+    - name: Verify results match
+      ansible.builtin.assert:
+        that:
+          - _core_plugin_operators is defined
+          - _core_plugin_operators | length > 0
+        success_msg: "✓ Successfully collected {{ _core_plugin_operators | length }} core plugin operators"
+        fail_msg: "✗ Failed to collect core plugin operators"

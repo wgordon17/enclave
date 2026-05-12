@@ -134,7 +134,7 @@
 
 - name: Set default catalog source
   set_fact:
-    default_catalog_source: "{{ catalog_mirror if plugin.mirror | default('core') == 'plugin' else _main_catalog_cs }}"
+    default_catalog_source: "{{ catalog_mirror if plugin.mirror | default('none') == 'plugin' else _main_catalog_cs }}"
   tags: always
 
 - name: Mirror plugin
