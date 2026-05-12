@@ -41,6 +41,7 @@
     skopeo copy \
     --all \
     --remove-signatures \
+    --insecure-policy \
     --authfile {{ pullSecretPath }} \
     --dest-tls-verify=false \
     --retry-times {{ ocMirrorRetryTimes }} \
