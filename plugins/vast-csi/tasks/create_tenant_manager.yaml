@@ -23,6 +23,16 @@
 # Sets output facts (cleared by deploy.yaml):
 #   vast_csi_api_token
 
+- name: Assert VAST tenant ID is available
+  ansible.builtin.assert:
+    that:
+      - r_tenant is defined
+      - r_tenant.tenants.id is defined
+      - r_tenant.tenants.id | string | length > 0
+    fail_msg: >-
+      r_tenant.tenants.id must be set before calling create_tenant_manager.yaml.
+      The VAST tenant must be created first.
+
 # ── Idempotency: skip if CSI Secret already has a valid token ─────────────
 
 - name: Check if CSI Secret already has a valid API token
@@ -168,7 +178,20 @@
 
     # ── API Token: long-lived credential for CSI driver ───────────────────
 
+    - name: Check if API token already exists for tenant manager
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/apitokens/?name=osac-csi-{{ vast_tenant }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ r_admin_auth.json.access }}"
+        validate_certs: "{{ vastDefaults.validateCerts }}"
+        timeout: "{{ vastDefaults.apiTimeout | int }}"
+        status_code: [200]
+      register: r_token_check
+      no_log: true
+
     - name: Generate API token for tenant manager
+      when: r_token_check.json | length == 0
       ansible.builtin.uri:
         url: "https://{{ vast_host }}/api/apitokens/"
         method: POST
@@ -184,22 +207,31 @@
       register: r_token_result
       no_log: true
 
-    - name: Fail if API token was not returned
+    - name: Fail if new API token was not returned
+      when:
+        - r_token_check.json | length == 0
+        - r_token_result.json.token is not defined or r_token_result.json.token | length == 0
       ansible.builtin.fail:
         msg: >-
           API token creation for manager 'osac-{{ vast_tenant }}' did not return a token.
           Check VMS API permissions and VAST version (API tokens require 5.3+).
-      when: >-
-        r_token_result.json.token is not defined
-        or r_token_result.json.token | length == 0
+
+    - name: Fail if existing token cannot be reused (token value not available via GET)
+      when:
+        - r_token_check.json | length > 0
+      ansible.builtin.fail:
+        msg: >-
+          API token 'osac-csi-{{ vast_tenant }}' already exists in VMS but the CSI Secret
+          does not contain it. The token value is only available at creation time.
+          Delete the existing token in VMS and re-run, or manually set the token in
+          the vast-csi-{{ vast_tenant }} Secret in the vast-csi namespace.
 
     - name: Set API token output fact
       ansible.builtin.set_fact:
         vast_csi_api_token: "{{ r_token_result.json.token }}"
       no_log: true
 
-    # ── Cleanup intermediate auth facts ───────────────────────────────────
-
+  always:
     - name: Clear intermediate auth and password facts
       ansible.builtin.set_fact:
         r_admin_auth: {}
@@ -208,5 +240,6 @@
         r_role_create: {}
         r_manager_check: {}
         r_manager_create: {}
+        r_token_check: {}
         r_token_result: {}
       no_log: true

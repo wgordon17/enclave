@@ -81,6 +81,7 @@
   no_log: true
   kubernetes.core.k8s:
     state: present
+    force: true
     definition:
       apiVersion: v1
       kind: Secret
