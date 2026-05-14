@@ -69,6 +69,12 @@
   loop_control:
     label: "view-{{ vast_tenant }}-{{ item.name }}"
 
+# ── VMS: Create tenant manager with API token ─────────────────────────────
+
+- name: Create tenant-scoped manager and API token
+  ansible.builtin.include_tasks:
+    file: "{{ plugin_dir }}/tasks/create_tenant_manager.yaml"
+
 # ── K8s: Create CSI credentials Secret ───────────────────────────────────
 
 - name: Create CSI credentials Secret for infra tenant
@@ -87,8 +93,7 @@
       type: Opaque
       stringData:
         endpoint: "{{ vast_host }}"
-        username: "{{ vastAdminUsername }}"
-        password: "{{ vastAdminPassword }}"
+        token: "{{ vast_csi_api_token }}"
   register: r_csi_secret
   retries: "{{ k8s_retries }}"
   delay: "{{ k8s_delay }}"
@@ -165,7 +170,9 @@
 
 # ── Credential cleanup ────────────────────────────────────────────────────
 
-- name: Clear VMS connection facts
+- name: Clear VMS connection and credential facts
   no_log: true
   ansible.builtin.set_fact:
     vast_vms_conn: null
+    vast_csi_api_token: null
+    vast_csi_role_id: null
