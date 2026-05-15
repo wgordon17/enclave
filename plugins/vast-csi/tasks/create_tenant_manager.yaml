@@ -1,16 +1,15 @@
 ---
-# Creates a tenant-scoped VMS Manager with a CSI role and API token for the
-# infra tenant. The CSI driver authenticates to VMS via this token instead of
-# admin credentials — principle of least privilege.
+# Creates a tenant-scoped VMS Manager with a CSI role for the infra tenant.
+# The CSI driver authenticates to VMS via username/password instead of admin
+# credentials — principle of least privilege.
 #
-# Flow: auth as admin → create role → create manager → generate API token.
+# Flow: auth as admin → create role → create manager.
 # Uses ansible.builtin.uri because vastdata.vms has no modules for
-# managers, roles, or API tokens.
+# managers or roles.
 #
 # Follows the osac-aap naming convention:
 #   Role:    osac-csi-{tenant}
 #   Manager: osac-{tenant}
-#   Token:   osac-csi-{tenant}
 #
 # Requires in scope:
 #   vast_tenant       — infra tenant name
@@ -21,7 +20,8 @@
 #   r_tenant.tenants.id — VAST tenant ID (from deploy.yaml)
 #
 # Sets output facts (cleared by deploy.yaml):
-#   vast_csi_api_token
+#   vast_csi_username
+#   vast_csi_password
 
 - name: Assert VAST tenant ID is available
   ansible.builtin.assert:
@@ -33,9 +33,9 @@
       r_tenant.tenants.id must be set before calling create_tenant_manager.yaml.
       The VAST tenant must be created first.
 
-# ── Idempotency: skip if CSI Secret already has a valid token ─────────────
+# ── Idempotency: skip if CSI Secret already has credentials ──────────────
 
-- name: Check if CSI Secret already has a valid API token
+- name: Check if CSI Secret already has credentials
   no_log: true
   kubernetes.core.k8s_info:
     api_version: v1
@@ -44,28 +44,31 @@
     namespace: vast-csi
   register: r_csi_secret_check
 
-- name: Set skip flag if token already exists in CSI Secret
+- name: Set skip flag if credentials already exist in CSI Secret
   no_log: true
   ansible.builtin.set_fact:
     vast_tenant_manager_exists: >-
       {{ r_csi_secret_check.resources | length > 0
-         and r_csi_secret_check.resources[0].data.token is defined
-         and (r_csi_secret_check.resources[0].data.token | b64decode | length) > 0 }}
+         and r_csi_secret_check.resources[0].data.username is defined
+         and (r_csi_secret_check.resources[0].data.username | b64decode | length) > 0
+         and r_csi_secret_check.resources[0].data.password is defined
+         and (r_csi_secret_check.resources[0].data.password | b64decode | length) > 0 }}
 
-- name: Extract existing token from CSI Secret
+- name: Extract existing credentials from CSI Secret
   no_log: true
   when: vast_tenant_manager_exists | bool
   ansible.builtin.set_fact:
-    vast_csi_api_token: "{{ r_csi_secret_check.resources[0].data.token | b64decode }}"
+    vast_csi_username: "{{ r_csi_secret_check.resources[0].data.username | b64decode }}"
+    vast_csi_password: "{{ r_csi_secret_check.resources[0].data.password | b64decode }}"
 
 - name: Log idempotency skip
   when: vast_tenant_manager_exists | bool
   ansible.builtin.debug:
-    msg: "Tenant manager for '{{ vast_tenant }}' already has API token in CSI Secret — skipping creation."
+    msg: "Tenant manager for '{{ vast_tenant }}' already has credentials in CSI Secret — skipping creation."
 
-# ── Create tenant manager and API token (first run only) ──────────────────
+# ── Create tenant manager (first run only) ───────────────────────────────
 
-- name: Create tenant manager and API token
+- name: Create tenant manager
   when: not (vast_tenant_manager_exists | bool)
   block:
     - name: Authenticate to VAST VMS as admin
@@ -105,17 +108,12 @@
         body_format: json
         body:
           name: "osac-csi-{{ vast_tenant }}"
-          tenant_ids:
-            - "{{ r_tenant.tenants.id | int }}"
+          tenant_id: "{{ r_tenant.tenants.id | int }}"
           permissions_list:
             - create_logical
             - view_logical
             - edit_logical
             - delete_logical
-            - create_security
-            - view_security
-            - edit_security
-            - view_monitoring
         headers:
           Authorization: "Bearer {{ r_admin_auth.json.access }}"
         validate_certs: "{{ vastDefaults.validateCerts }}"
@@ -153,7 +151,7 @@
       no_log: true
       when: r_manager_check.json | length == 0
       ansible.builtin.set_fact:
-        vast_manager_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+        vast_manager_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits,punctuation') }}"
 
     - name: Create TENANT_ADMIN manager
       no_log: true
@@ -170,6 +168,7 @@
           roles:
             - "{{ vast_csi_role_id | int }}"
           password_expiration_disabled: true
+          is_temporary_password: false
         headers:
           Authorization: "Bearer {{ r_admin_auth.json.access }}"
         validate_certs: "{{ vastDefaults.validateCerts }}"
@@ -177,60 +176,20 @@
         status_code: [200, 201]
       register: r_manager_create
 
-    # ── API Token: long-lived credential for CSI driver ───────────────────
-
-    - name: Check if API token already exists for tenant manager
-      no_log: true
-      ansible.builtin.uri:
-        url: "https://{{ vast_host }}/api/apitokens/?name=osac-csi-{{ vast_tenant }}"
-        method: GET
-        headers:
-          Authorization: "Bearer {{ r_admin_auth.json.access }}"
-        validate_certs: "{{ vastDefaults.validateCerts }}"
-        timeout: "{{ vastDefaults.apiTimeout | int }}"
-        status_code: [200]
-      register: r_token_check
-
-    - name: Generate API token for tenant manager
-      no_log: true
-      when: r_token_check.json | length == 0
-      ansible.builtin.uri:
-        url: "https://{{ vast_host }}/api/apitokens/"
-        method: POST
-        body_format: json
-        body:
-          owner: "osac-{{ vast_tenant }}"
-          name: "osac-csi-{{ vast_tenant }}"
-        headers:
-          Authorization: "Bearer {{ r_admin_auth.json.access }}"
-        validate_certs: "{{ vastDefaults.validateCerts }}"
-        timeout: "{{ vastDefaults.apiTimeout | int }}"
-        status_code: [200, 201]
-      register: r_token_result
-
-    - name: Fail if new API token was not returned
+    - name: Fail if manager already exists but password is unknown
       when:
-        - r_token_check.json | length == 0
-        - r_token_result.json.token is not defined or r_token_result.json.token | length == 0
+        - r_manager_check.json | length > 0
       ansible.builtin.fail:
         msg: >-
-          API token creation for manager 'osac-{{ vast_tenant }}' did not return a token.
-          Check VMS API permissions and VAST version (API tokens require 5.3+).
+          Manager 'osac-{{ vast_tenant }}' already exists in VMS but the CSI Secret
+          does not contain its credentials. Delete the manager in VMS and re-run,
+          or manually set the credentials in the vast-csi-{{ vast_tenant }} Secret.
 
-    - name: Fail if existing token cannot be reused (token value not available via GET)
-      when:
-        - r_token_check.json | length > 0
-      ansible.builtin.fail:
-        msg: >-
-          API token 'osac-csi-{{ vast_tenant }}' already exists in VMS but the CSI Secret
-          does not contain it. The token value is only available at creation time.
-          Delete the existing token in VMS and re-run, or manually set the token in
-          the vast-csi-{{ vast_tenant }} Secret in the vast-csi namespace.
-
-    - name: Set API token output fact
+    - name: Set credential output facts
       no_log: true
       ansible.builtin.set_fact:
-        vast_csi_api_token: "{{ r_token_result.json.token }}"
+        vast_csi_username: "osac-{{ vast_tenant }}"
+        vast_csi_password: "{{ vast_manager_password }}"
 
   always:
     - name: Clear intermediate auth and password facts
@@ -242,5 +201,3 @@
         r_role_create: {}
         r_manager_check: {}
         r_manager_create: {}
-        r_token_check: {}
-        r_token_result: {}

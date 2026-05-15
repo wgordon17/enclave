@@ -73,7 +73,7 @@
 
     # ── VMS: Create tenant manager with API token ─────────────────────────
 
-    - name: Create tenant-scoped manager and API token
+    - name: Create tenant-scoped manager
       ansible.builtin.include_tasks:
         file: "{{ plugin_dir }}/tasks/create_tenant_manager.yaml"
 
@@ -96,7 +96,9 @@
           type: Opaque
           stringData:
             endpoint: "{{ vast_host }}"
-            token: "{{ vast_csi_api_token }}"
+            username: "{{ vast_csi_username }}"
+            password: "{{ vast_csi_password }}"
+            tenant: "{{ vast_tenant }}"
       register: r_csi_secret
       retries: "{{ k8s_retries }}"
       delay: "{{ k8s_delay }}"
@@ -176,5 +178,6 @@
       no_log: true
       ansible.builtin.set_fact:
         vast_vms_conn: null
-        vast_csi_api_token: null
+        vast_csi_username: null
+        vast_csi_password: null
         vast_csi_role_id: null
