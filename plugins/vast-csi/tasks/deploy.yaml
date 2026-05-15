@@ -114,6 +114,7 @@
       vastdata.vms.views:
         name: "view-{{ vast_tenant }}-{{ item.name }}"
         path: "{{ vastDefaults.storagePath }}/{{ vast_tenant }}/{{ item.name }}"
+        create_dir: true
         policy_id: "{{ vast_view_policy_id }}"
         tenant_id: "{{ r_tenant.tenants.id }}"
         protocols:

@@ -184,6 +184,7 @@ def main():
         view_payload = {
             "name": f"_test-view-{args.tenant}",
             "path": f"/osac/{args.tenant}/_test",
+            "create_dir": True,
             "policy_id": int(view_policy_id),
             "tenant_id": int(tenant_id),
             "protocols": ["NFS"],
