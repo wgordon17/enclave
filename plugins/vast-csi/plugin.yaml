@@ -47,6 +47,8 @@ requires:
       description: "VAST CSI deployment tasks"
     - path: "tasks/quay.yaml"
       description: "VAST Quay storage configuration"
+    - path: "tasks/create_tenant_manager.yaml"
+      description: "VAST tenant manager creation tasks"
 
 clusterSelector:
   matchLabels:
