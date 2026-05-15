@@ -1,0 +1,315 @@
+---
+# Validates create_tenant_manager.yaml against a live VMS instance.
+# Includes the actual task file, verifies the results, then cleans up.
+#
+# Requires: kubeconfig with cluster access + VMS admin credentials.
+#
+# Usage:
+#   ansible-playbook plugins/vast-csi/tests/test_create_tenant_manager.yaml \
+#     -e vast_endpoint=https://vms.example.com \
+#     -e vast_admin_username=admin \
+#     -e vast_admin_password=<password> \
+#     [-e vast_test_tenant=infra] \
+#     [-e validate_certs=false] \
+#     [-e cleanup=true] \
+#     -v
+
+- name: Test create_tenant_manager.yaml against live VMS
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    vast_test_tenant: infra
+    validate_certs: true
+    cleanup: true
+    api_timeout: 30
+
+  tasks:
+
+    # ── Preflight: ensure required vars are set ─────────────────────────────
+
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - vast_endpoint is defined and vast_endpoint | length > 0
+          - vast_admin_username is defined and vast_admin_username | length > 0
+          - vast_admin_password is defined and vast_admin_password | length > 0
+        fail_msg: >-
+          Required: -e vast_endpoint=... -e vast_admin_username=... -e vast_admin_password=...
+
+    # ── Preflight: ensure vast-csi namespace exists for K8s Secret check ────
+
+    - name: Ensure vast-csi namespace exists
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: vast-csi
+
+    # ── Setup: configure scope variables matching deploy.yaml ───────────────
+
+    - name: Set scope variables
+      ansible.builtin.set_fact:
+        vast_tenant: "{{ vast_test_tenant }}"
+        vast_host: "{{ vast_endpoint | regex_replace('^https?://', '') }}"
+        vastAdminUsername: "{{ vast_admin_username }}"
+        vastAdminPassword: "{{ vast_admin_password }}"
+        vastDefaults:
+          validateCerts: "{{ validate_certs }}"
+          apiTimeout: "{{ api_timeout }}"
+          infraTenant: "{{ vast_test_tenant }}"
+
+    - name: Authenticate to VMS as admin
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/token/"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ vastAdminUsername }}"
+          password: "{{ vastAdminPassword }}"
+        validate_certs: "{{ validate_certs }}"
+        timeout: "{{ api_timeout }}"
+        status_code: [200, 201]
+      register: _test_auth
+      no_log: true
+
+    - name: Look up tenant '{{ vast_tenant }}'
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/tenants/?name={{ vast_tenant }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _test_auth.json.access }}"
+        validate_certs: "{{ validate_certs }}"
+        timeout: "{{ api_timeout }}"
+      register: _test_tenant_lookup
+
+    - name: Fail if tenant not found
+      ansible.builtin.fail:
+        msg: >-
+          Tenant '{{ vast_tenant }}' not found on VMS. Create it first or
+          specify a different tenant with -e vast_test_tenant=<name>
+      when: _test_tenant_lookup.json | length == 0
+
+    - name: Set r_tenant fact (matches vastdata.vms.tenants register format)
+      ansible.builtin.set_fact:
+        r_tenant:
+          tenants:
+            id: "{{ _test_tenant_lookup.json[0].id }}"
+            name: "{{ _test_tenant_lookup.json[0].name }}"
+
+    - name: Show test parameters
+      ansible.builtin.debug:
+        msg: >-
+          VMS: {{ vast_host }} | Tenant: {{ vast_tenant }}
+          (id: {{ r_tenant.tenants.id }}) | Cleanup: {{ cleanup }}
+
+    # ── Run the code under test ─────────────────────────────────────────────
+
+    - name: Include create_tenant_manager.yaml
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../tasks/create_tenant_manager.yaml"
+
+    # ── Verify results ──────────────────────────────────────────────────────
+
+    - name: Verify API token was produced
+      ansible.builtin.assert:
+        that:
+          - vast_csi_api_token is defined
+          - vast_csi_api_token | length > 0
+        success_msg: "API token generated ({{ vast_csi_api_token[:8] }}...)"
+        fail_msg: "create_tenant_manager.yaml did not produce an API token"
+
+    - name: Re-authenticate as admin to verify resources
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/token/"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ vastAdminUsername }}"
+          password: "{{ vastAdminPassword }}"
+        validate_certs: "{{ validate_certs }}"
+        timeout: "{{ api_timeout }}"
+        status_code: [200, 201]
+      register: _verify_auth
+      no_log: true
+
+    - name: Verify role exists on VMS
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/roles/?name=osac-csi-{{ vast_tenant }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _verify_auth.json.access }}"
+        validate_certs: "{{ validate_certs }}"
+        timeout: "{{ api_timeout }}"
+      register: _verify_role
+
+    - name: Verify manager exists on VMS
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/managers/?username=osac-{{ vast_tenant }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _verify_auth.json.access }}"
+        validate_certs: "{{ validate_certs }}"
+        timeout: "{{ api_timeout }}"
+      register: _verify_manager
+
+    - name: Verify API token exists on VMS
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/apitokens/?name=osac-csi-{{ vast_tenant }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _verify_auth.json.access }}"
+        validate_certs: "{{ validate_certs }}"
+        timeout: "{{ api_timeout }}"
+      register: _verify_token
+
+    - name: Report verification results
+      ansible.builtin.debug:
+        msg: |
+          ── Verification ──
+          Role 'osac-csi-{{ vast_tenant }}':    {{ 'PASS' if _verify_role.json | length > 0 else 'FAIL' }} (id: {{ _verify_role.json[0].id | default('N/A') }})
+          Manager 'osac-{{ vast_tenant }}':      {{ 'PASS' if _verify_manager.json | length > 0 else 'FAIL' }} (id: {{ _verify_manager.json[0].id | default('N/A') }})
+          Token 'osac-csi-{{ vast_tenant }}':    {{ 'PASS' if _verify_token.json | length > 0 else 'FAIL' }} (id: {{ _verify_token.json[0].id | default('N/A') }})
+
+    - name: Fail if any resource is missing
+      ansible.builtin.assert:
+        that:
+          - _verify_role.json | length > 0
+          - _verify_manager.json | length > 0
+          - _verify_token.json | length > 0
+        fail_msg: "One or more VMS resources were not created"
+        success_msg: "All VMS resources verified"
+
+    # ── Idempotency: run a second time to verify skip path ──────────────────
+
+    - name: Create CSI Secret (simulates deploy.yaml writing the token)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "vast-csi-{{ vast_tenant }}"
+            namespace: vast-csi
+          type: Opaque
+          stringData:
+            endpoint: "{{ vast_host }}"
+            token: "{{ vast_csi_api_token }}"
+
+    - name: Clear output facts before idempotency re-run
+      ansible.builtin.set_fact:
+        vast_csi_api_token: ""
+        vast_csi_role_id: ""
+
+    - name: "Re-run create_tenant_manager.yaml (should skip via idempotency)"
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../tasks/create_tenant_manager.yaml"
+
+    - name: Verify idempotency — token extracted from Secret, not created
+      ansible.builtin.assert:
+        that:
+          - vast_csi_api_token is defined
+          - vast_csi_api_token | length > 0
+        success_msg: "Idempotency PASS — token extracted from existing Secret"
+        fail_msg: "Idempotency FAIL — token not recovered from Secret"
+
+    # ── Cleanup ─────────────────────────────────────────────────────────────
+
+    - name: Cleanup VMS resources and K8s Secret
+      when: cleanup | bool
+      block:
+        - name: Re-authenticate as admin for cleanup
+          ansible.builtin.uri:
+            url: "https://{{ vast_host }}/api/token/"
+            method: POST
+            body_format: json
+            body:
+              username: "{{ vastAdminUsername }}"
+              password: "{{ vastAdminPassword }}"
+            validate_certs: "{{ validate_certs }}"
+            timeout: "{{ api_timeout }}"
+            status_code: [200, 201]
+          register: _cleanup_auth
+          no_log: true
+
+        - name: Find and delete API token
+          ansible.builtin.uri:
+            url: "https://{{ vast_host }}/api/apitokens/?name=osac-csi-{{ vast_tenant }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ _cleanup_auth.json.access }}"
+            validate_certs: "{{ validate_certs }}"
+            timeout: "{{ api_timeout }}"
+          register: _cleanup_token
+
+        - name: Delete API token
+          when: _cleanup_token.json | length > 0
+          ansible.builtin.uri:
+            url: "https://{{ vast_host }}/api/apitokens/{{ _cleanup_token.json[0].id }}/"
+            method: DELETE
+            headers:
+              Authorization: "Bearer {{ _cleanup_auth.json.access }}"
+            validate_certs: "{{ validate_certs }}"
+            timeout: "{{ api_timeout }}"
+            status_code: [200, 204]
+
+        - name: Find and delete manager
+          ansible.builtin.uri:
+            url: "https://{{ vast_host }}/api/managers/?username=osac-{{ vast_tenant }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ _cleanup_auth.json.access }}"
+            validate_certs: "{{ validate_certs }}"
+            timeout: "{{ api_timeout }}"
+          register: _cleanup_manager
+
+        - name: Delete manager
+          when: _cleanup_manager.json | length > 0
+          ansible.builtin.uri:
+            url: "https://{{ vast_host }}/api/managers/{{ _cleanup_manager.json[0].id }}/"
+            method: DELETE
+            headers:
+              Authorization: "Bearer {{ _cleanup_auth.json.access }}"
+            validate_certs: "{{ validate_certs }}"
+            timeout: "{{ api_timeout }}"
+            status_code: [200, 204]
+
+        - name: Find and delete role
+          ansible.builtin.uri:
+            url: "https://{{ vast_host }}/api/roles/?name=osac-csi-{{ vast_tenant }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ _cleanup_auth.json.access }}"
+            validate_certs: "{{ validate_certs }}"
+            timeout: "{{ api_timeout }}"
+          register: _cleanup_role
+
+        - name: Delete role
+          when: _cleanup_role.json | length > 0
+          ansible.builtin.uri:
+            url: "https://{{ vast_host }}/api/roles/{{ _cleanup_role.json[0].id }}/"
+            method: DELETE
+            headers:
+              Authorization: "Bearer {{ _cleanup_auth.json.access }}"
+            validate_certs: "{{ validate_certs }}"
+            timeout: "{{ api_timeout }}"
+            status_code: [200, 204]
+
+        - name: Delete CSI Secret
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Secret
+            name: "vast-csi-{{ vast_tenant }}"
+            namespace: vast-csi
+
+        - name: Cleanup complete
+          ansible.builtin.debug:
+            msg: >-
+              Cleaned up: token 'osac-csi-{{ vast_tenant }}',
+              manager 'osac-{{ vast_tenant }}',
+              role 'osac-csi-{{ vast_tenant }}',
+              Secret 'vast-csi-{{ vast_tenant }}'
