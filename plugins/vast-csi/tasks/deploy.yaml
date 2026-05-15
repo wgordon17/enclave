@@ -54,6 +54,59 @@
         state: present
       register: r_vippool
 
+    # ── VMS: Ensure view policy exists for tenant ──────────────────────────
+
+    - name: Authenticate to VMS for view policy management
+      no_log: true
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/token/"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ vastAdminUsername }}"
+          password: "{{ vastAdminPassword }}"
+        validate_certs: "{{ vastDefaults.validateCerts }}"
+        timeout: "{{ vastDefaults.apiTimeout | int }}"
+        status_code: [200, 201]
+      register: r_deploy_auth
+
+    - name: Check if view policy exists for tenant
+      no_log: true
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/viewpolicies/?name=osac-{{ vast_tenant }}&tenant_id={{ r_tenant.tenants.id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ r_deploy_auth.json.access }}"
+        validate_certs: "{{ vastDefaults.validateCerts }}"
+        timeout: "{{ vastDefaults.apiTimeout | int }}"
+        status_code: [200]
+      register: r_viewpolicy_check
+
+    - name: Create view policy for tenant
+      no_log: true
+      when: r_viewpolicy_check.json | length == 0
+      ansible.builtin.uri:
+        url: "https://{{ vast_host }}/api/viewpolicies/"
+        method: POST
+        body_format: json
+        body:
+          name: "osac-{{ vast_tenant }}"
+          tenant_id: "{{ r_tenant.tenants.id | int }}"
+          flavor: NFS
+        headers:
+          Authorization: "Bearer {{ r_deploy_auth.json.access }}"
+        validate_certs: "{{ vastDefaults.validateCerts }}"
+        timeout: "{{ vastDefaults.apiTimeout | int }}"
+        status_code: [200, 201]
+      register: r_viewpolicy_create
+
+    - name: Set view policy ID
+      ansible.builtin.set_fact:
+        vast_view_policy_id: >-
+          {{ (r_viewpolicy_check.json | length == 0) | ternary(
+             r_viewpolicy_create.json.id | default(''),
+             r_viewpolicy_check.json[0].id | default('')) }}
+
     # ── VMS: Create views per tier ────────────────────────────────────────
 
     - name: Create view for each tier
@@ -61,7 +114,7 @@
       vastdata.vms.views:
         name: "view-{{ vast_tenant }}-{{ item.name }}"
         path: "{{ vastDefaults.storagePath }}/{{ vast_tenant }}/{{ item.name }}"
-        policy_id: "{{ vastDefaults.viewPolicyId }}"
+        policy_id: "{{ vast_view_policy_id }}"
         tenant_id: "{{ r_tenant.tenants.id }}"
         protocols:
           - "{{ item.protocol | upper }}"
@@ -178,6 +231,8 @@
       no_log: true
       ansible.builtin.set_fact:
         vast_vms_conn: null
+        r_deploy_auth: null
+        vast_view_policy_id: null
         vast_csi_username: null
         vast_csi_password: null
         vast_csi_role_id: null
